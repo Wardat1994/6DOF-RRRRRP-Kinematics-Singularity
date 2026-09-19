@@ -33,4 +33,22 @@ d6 = 0.20
 
 fig, ax = plot_robot(q, d6)
 
+
+# =====================================================
+# SAVE RESULT
+# =====================================================
+
+results_dir = PROJECT_ROOT / "results"
+results_dir.mkdir(exist_ok=True)
+
+output_file = results_dir / "robot_configuration.png"
+
+fig.savefig(
+    output_file,
+    dpi=300,
+    bbox_inches="tight"
+)
+
+print(f"Robot figure saved to: {output_file}")
+
 plt.show()
