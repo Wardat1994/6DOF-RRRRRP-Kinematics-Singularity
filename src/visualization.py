@@ -44,7 +44,7 @@ def plot_robot(q, d6, show_frames=False):
         label="RRRRRP Manipulator"
     )
 
-    # Base
+    # Base marker
     ax.scatter(
         x[0],
         y[0],
@@ -54,7 +54,7 @@ def plot_robot(q, d6, show_frames=False):
         label="Base"
     )
 
-    # End-effector
+    # End-effector marker
     ax.scatter(
         x[-1],
         y[-1],
@@ -64,15 +64,61 @@ def plot_robot(q, d6, show_frames=False):
         label="End-Effector"
     )
 
-    # Joint labels
-    for i in range(1, 6):
-        ax.text(
-            x[i],
-            y[i],
-            z[i],
-            f"J{i}"
-        )
+    # =====================================================
+    # PHYSICAL JOINT LABELS
+    # =====================================================
 
+    # Base / Joint 1
+    ax.text(
+        x[0],
+        y[0],
+        z[0],
+        "J1 / Base"
+    )
+
+    # Joint 2
+    ax.text(
+        x[1],
+        y[1],
+        z[1],
+        "J2"
+    )
+
+    # Joint 3
+    ax.text(
+        x[2],
+        y[2],
+        z[2],
+        "J3"
+    )
+
+    # Joint 4
+    ax.text(
+        x[3],
+        y[3],
+        z[3],
+        "J4"
+    )
+
+    # Joint 5
+    ax.text(
+        x[4],
+        y[4],
+        z[4],
+        "J5"
+    )
+
+    # Joint 6 (Prismatic) lies along the final segment
+    j6_mid = 0.5 * (points[5] + points[6])
+
+    ax.text(
+        j6_mid[0],
+        j6_mid[1],
+        j6_mid[2],
+        "J6 (P)"
+    )
+
+    # End-effector
     ax.text(
         x[-1],
         y[-1],
