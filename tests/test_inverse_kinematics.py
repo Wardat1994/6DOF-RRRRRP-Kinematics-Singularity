@@ -97,7 +97,6 @@ def test_position_ik_converges():
     )
 
     assert result["converged"] is True
-
     assert result["final_error"] <= 1e-4
 
 
@@ -151,13 +150,10 @@ def test_error_history_decreases():
     result = solve_position_ik(
         target_position=TARGET_POSITION,
         q_initial=Q_INITIAL,
-        d6_initial=D6_INITIAL,
-        damping=0.05,
-        step_size=0.5
+        d6_initial=D6_INITIAL
     )
 
     history = result["error_history"]
 
     assert len(history) > 1
-
     assert history[-1] < history[0]
