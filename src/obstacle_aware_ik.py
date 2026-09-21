@@ -33,9 +33,14 @@ from src.obstacle_avoidance import (
     obstacle_clearance_gradient,
 )
 
+from src.obstacle_safety_filter import (
+    enforce_safe_step,
+    minimum_clearance_along_step,
+)
+
 
 # =====================================================
-# SINGLE OBSTACLE-AWARE IK STEP
+# SINGLE SAFETY-CONSTRAINED OBSTACLE-AWARE IK STEP
 # =====================================================
 
 def obstacle_aware_ik_step(
@@ -61,6 +66,12 @@ def obstacle_aware_ik_step(
     obstacle_safety_distance=0.10,
     obstacle_influence_distance=0.40,
 
+    use_safety_filter=True,
+    safety_filter_buffer=0.005,
+    safety_filter_samples=20,
+    safety_filter_backtracking_factor=0.5,
+    safety_filter_max_backtracking_steps=12,
+
     sigma_threshold=0.10,
 
     lambda_min=1e-4,
@@ -70,12 +81,12 @@ def obstacle_aware_ik_step(
     max_prismatic_step=0.02
 ):
     """
-    Perform one obstacle-aware multi-objective
-    inverse-kinematics iteration.
+    Perform one safety-constrained obstacle-aware
+    multi-objective IK iteration.
 
     Primary task
     ------------
-    Cartesian end-effector position tracking.
+    Cartesian position tracking.
 
     Secondary objectives
     --------------------
@@ -83,17 +94,18 @@ def obstacle_aware_ik_step(
     2. Joint-limit avoidance.
     3. Obstacle avoidance.
 
-    Safety layer
-    ------------
-    Protected joint safety bounds.
+    Safety mechanisms
+    -----------------
+    1. Protected internal joint limits.
+    2. Linearized obstacle-clearance safety filter.
+    3. Nonlinear sampled path validation.
+    4. Backtracking when the proposed motion is unsafe.
 
     Notes
     -----
-    Obstacle avoidance is implemented as a
-    secondary damped task-priority objective.
-
-    Therefore, this first research implementation
-    does not provide a formal collision-free
+    The obstacle safety verification is sampling-based.
+    It improves trajectory safety but should not be
+    interpreted as a formal continuous-time collision
     guarantee.
     """
 
@@ -173,6 +185,16 @@ def obstacle_aware_ik_step(
             "greater than obstacle_safety_distance."
         )
 
+    if safety_filter_buffer < 0.0:
+        raise ValueError(
+            "safety_filter_buffer must be non-negative."
+        )
+
+    if safety_filter_samples < 1:
+        raise ValueError(
+            "safety_filter_samples must be at least 1."
+        )
+
     # =================================================
     # CURRENT CARTESIAN ERROR
     # =================================================
@@ -210,16 +232,13 @@ def obstacle_aware_ik_step(
         sigma_min
     ) = adaptive_dls_pseudoinverse(
         J,
-        sigma_threshold=(
-            sigma_threshold
-        ),
+        sigma_threshold=sigma_threshold,
         lambda_min=lambda_min,
         lambda_max=lambda_max
     )
 
     # =================================================
     # PRIMARY TASK
-    # CARTESIAN POSITION TRACKING
     # =================================================
 
     primary_delta = (
@@ -347,8 +366,6 @@ def obstacle_aware_ik_step(
         )
     )
 
-    # Only calculate the expensive gradient when
-    # the obstacle is inside the influence region.
     if obstacle_activation_value > 0.0:
 
         obstacle_gradient = (
@@ -392,7 +409,7 @@ def obstacle_aware_ik_step(
     )
 
     # =================================================
-    # COMBINED SECONDARY OBJECTIVES
+    # COMBINED SECONDARY COMMAND
     # =================================================
 
     secondary_command = (
@@ -416,40 +433,33 @@ def obstacle_aware_ik_step(
     )
 
     # =================================================
-    # TOTAL UPDATE
+    # NOMINAL TOTAL UPDATE
     # =================================================
 
-    total_delta = (
+    nominal_total_delta = (
         primary_delta
         + secondary_delta
     )
 
-    # Limit revolute increments
-    total_delta[:5] = np.clip(
-        total_delta[:5],
+    nominal_total_delta[:5] = np.clip(
+        nominal_total_delta[:5],
         -max_revolute_step,
         max_revolute_step
     )
 
-    # Limit prismatic increment
-    total_delta[5] = np.clip(
-        total_delta[5],
+    nominal_total_delta[5] = np.clip(
+        nominal_total_delta[5],
         -max_prismatic_step,
         max_prismatic_step
     )
 
-    generalized_state = np.concatenate([
+    current_state = np.concatenate([
         q,
         [float(d6)]
     ])
 
-    proposed_state = (
-        generalized_state
-        + total_delta
-    )
-
     # =================================================
-    # PROTECTED JOINT SAFETY BOUNDS
+    # PROTECTED JOINT BOUNDS FIRST
     # =================================================
 
     safe_min, safe_max = (
@@ -460,24 +470,385 @@ def obstacle_aware_ik_step(
         )
     )
 
-    protected_state = np.clip(
-        proposed_state,
+    nominal_state = (
+        current_state
+        + nominal_total_delta
+    )
+
+    bounded_state = np.clip(
+        nominal_state,
         safe_min,
         safe_max
     )
 
-    protected_state = np.clip(
-        protected_state,
+    bounded_state = np.clip(
+        bounded_state,
+        JOINT_MIN,
+        JOINT_MAX
+    )
+
+    bounded_nominal_delta = (
+        bounded_state
+        - current_state
+    )
+
+    # =================================================
+    # OBSTACLE SAFETY FILTER
+    # =================================================
+
+    if use_safety_filter:
+
+        safety_result = (
+            enforce_safe_step(
+                q=q,
+                d6=d6,
+
+                delta=(
+                    bounded_nominal_delta
+                ),
+
+                obstacle_center=(
+                    obstacle_center
+                ),
+
+                obstacle_radius=(
+                    obstacle_radius
+                ),
+
+                link_radius=(
+                    link_radius
+                ),
+
+                safety_distance=(
+                    obstacle_safety_distance
+                ),
+
+                safety_buffer=(
+                    safety_filter_buffer
+                ),
+
+                samples=(
+                    safety_filter_samples
+                ),
+
+                backtracking_factor=(
+                    safety_filter_backtracking_factor
+                ),
+
+                max_backtracking_steps=(
+                    safety_filter_max_backtracking_steps
+                )
+            )
+        )
+
+        filtered_delta = (
+            safety_result[
+                "delta"
+            ].copy()
+        )
+
+    else:
+
+        filtered_delta = (
+            bounded_nominal_delta.copy()
+        )
+
+        path_result = (
+            minimum_clearance_along_step(
+                q=q,
+                d6=d6,
+
+                delta=(
+                    filtered_delta
+                ),
+
+                obstacle_center=(
+                    obstacle_center
+                ),
+
+                obstacle_radius=(
+                    obstacle_radius
+                ),
+
+                link_radius=(
+                    link_radius
+                ),
+
+                samples=(
+                    safety_filter_samples
+                )
+            )
+        )
+
+        safety_result = {
+            "accepted": True,
+            "scale": 1.0,
+            "backtracking_steps": 0,
+            "minimum_path_clearance": (
+                path_result[
+                    "minimum_clearance"
+                ]
+            ),
+            "minimum_path_fraction": (
+                path_result[
+                    "minimum_fraction"
+                ]
+            ),
+            "linear_filter_corrected": False,
+            "predicted_clearance": (
+                clearance
+            ),
+        }
+
+    # =================================================
+    # RE-APPLY JOINT BOUNDS AFTER FILTER
+    # =================================================
+    #
+    # The linear safety correction may change the
+    # generalized command. Therefore, joint safety
+    # bounds are applied again.
+    # =================================================
+
+    filtered_state = (
+        current_state
+        + filtered_delta
+    )
+
+    filtered_state = np.clip(
+        filtered_state,
+        safe_min,
+        safe_max
+    )
+
+    filtered_state = np.clip(
+        filtered_state,
+        JOINT_MIN,
+        JOINT_MAX
+    )
+
+    actual_delta = (
+        filtered_state
+        - current_state
+    )
+
+    # =================================================
+    # FINAL NONLINEAR PATH SAFETY VERIFICATION
+    # =================================================
+
+    actual_path = (
+        minimum_clearance_along_step(
+            q=q,
+            d6=d6,
+
+            delta=(
+                actual_delta
+            ),
+
+            obstacle_center=(
+                obstacle_center
+            ),
+
+            obstacle_radius=(
+                obstacle_radius
+            ),
+
+            link_radius=(
+                link_radius
+            ),
+
+            samples=(
+                safety_filter_samples
+            )
+        )
+    )
+
+    actual_safe = (
+        actual_path[
+            "minimum_clearance"
+        ]
+        >= obstacle_safety_distance
+    )
+
+    final_scale = 1.0
+
+    final_backtracking_steps = 0
+
+    # =================================================
+    # SECOND BACKTRACKING LAYER
+    # =================================================
+    #
+    # Joint clipping can slightly change the motion
+    # originally approved by the obstacle filter.
+    #
+    # If that happens, backtrack the actual bounded
+    # step until it is safe.
+    # =================================================
+
+    if (
+        use_safety_filter
+        and not actual_safe
+    ):
+
+        accepted = False
+
+        scale = 1.0
+
+        for backtracking_step in range(
+            safety_filter_max_backtracking_steps
+            + 1
+        ):
+
+            candidate_delta = (
+                scale
+                * actual_delta
+            )
+
+            candidate_path = (
+                minimum_clearance_along_step(
+                    q=q,
+                    d6=d6,
+
+                    delta=(
+                        candidate_delta
+                    ),
+
+                    obstacle_center=(
+                        obstacle_center
+                    ),
+
+                    obstacle_radius=(
+                        obstacle_radius
+                    ),
+
+                    link_radius=(
+                        link_radius
+                    ),
+
+                    samples=(
+                        safety_filter_samples
+                    )
+                )
+            )
+
+            if (
+                candidate_path[
+                    "minimum_clearance"
+                ]
+                >= obstacle_safety_distance
+            ):
+
+                actual_delta = (
+                    candidate_delta
+                )
+
+                actual_path = (
+                    candidate_path
+                )
+
+                final_scale = float(
+                    scale
+                )
+
+                final_backtracking_steps = (
+                    backtracking_step
+                )
+
+                accepted = True
+
+                break
+
+            scale *= (
+                safety_filter_backtracking_factor
+            )
+
+        if not accepted:
+
+            actual_delta = np.zeros(
+                6,
+                dtype=float
+            )
+
+            actual_path = (
+                minimum_clearance_along_step(
+                    q=q,
+                    d6=d6,
+
+                    delta=(
+                        actual_delta
+                    ),
+
+                    obstacle_center=(
+                        obstacle_center
+                    ),
+
+                    obstacle_radius=(
+                        obstacle_radius
+                    ),
+
+                    link_radius=(
+                        link_radius
+                    ),
+
+                    samples=(
+                        safety_filter_samples
+                    )
+                )
+            )
+
+            final_scale = 0.0
+
+            final_backtracking_steps = (
+                safety_filter_max_backtracking_steps
+            )
+
+    # =================================================
+    # FINAL STATE
+    # =================================================
+
+    final_state = (
+        current_state
+        + actual_delta
+    )
+
+    final_state = np.clip(
+        final_state,
+        safe_min,
+        safe_max
+    )
+
+    final_state = np.clip(
+        final_state,
         JOINT_MIN,
         JOINT_MAX
     )
 
     q_new = (
-        protected_state[:5].copy()
+        final_state[:5].copy()
     )
 
     d6_new = float(
-        protected_state[5]
+        final_state[5]
+    )
+
+    final_step_safe = (
+        actual_path[
+            "minimum_clearance"
+        ]
+        >= obstacle_safety_distance
+    )
+
+    filter_applied = bool(
+        use_safety_filter
+    )
+
+    filter_corrected = bool(
+        safety_result[
+            "linear_filter_corrected"
+        ]
+        or not np.allclose(
+            actual_delta,
+            bounded_nominal_delta
+        )
     )
 
     # =================================================
@@ -544,8 +915,17 @@ def obstacle_aware_ik_step(
             secondary_delta
         ),
 
+        "nominal_total_delta": (
+            nominal_total_delta
+        ),
+
+        "bounded_nominal_delta": (
+            bounded_nominal_delta
+        ),
+
+        # Actual applied safe motion
         "total_delta": (
-            total_delta
+            actual_delta
         ),
 
         "singularity_gradient": (
@@ -570,11 +950,65 @@ def obstacle_aware_ik_step(
                 d6
             )
         ),
+
+        # Safety information
+        "safety_filter_applied": (
+            filter_applied
+        ),
+
+        "safety_filter_corrected": (
+            filter_corrected
+        ),
+
+        "safety_filter_accepted": (
+            bool(
+                safety_result[
+                    "accepted"
+                ]
+            )
+            and final_step_safe
+        ),
+
+        "safety_filter_scale": (
+            float(
+                safety_result[
+                    "scale"
+                ]
+            )
+            * final_scale
+        ),
+
+        "safety_filter_backtracking_steps": (
+            int(
+                safety_result[
+                    "backtracking_steps"
+                ]
+            )
+            + final_backtracking_steps
+        ),
+
+        "minimum_path_clearance": float(
+            actual_path[
+                "minimum_clearance"
+            ]
+        ),
+
+        "minimum_path_fraction": float(
+            actual_path[
+                "minimum_fraction"
+            ]
+        ),
+
+        "predicted_clearance": float(
+            safety_result[
+                "predicted_clearance"
+            ]
+        ),
     }
 
 
 # =====================================================
-# COMPLETE OBSTACLE-AWARE IK SOLVER
+# COMPLETE SAFETY-CONSTRAINED OBSTACLE-AWARE IK
 # =====================================================
 
 def solve_obstacle_aware_ik(
@@ -601,6 +1035,12 @@ def solve_obstacle_aware_ik(
     obstacle_safety_distance=0.10,
     obstacle_influence_distance=0.40,
 
+    use_safety_filter=True,
+    safety_filter_buffer=0.005,
+    safety_filter_samples=20,
+    safety_filter_backtracking_factor=0.5,
+    safety_filter_max_backtracking_steps=12,
+
     tolerance=1e-4,
     max_iterations=1000,
 
@@ -620,15 +1060,25 @@ def solve_obstacle_aware_ik(
         +
         Obstacle Avoidance
         +
-        Protected Joint Safety Bounds
+        Protected Joint Bounds
+        +
+        Obstacle Clearance Safety Filter
 
-    Convergence requires:
+    Strong convergence criterion
+    ----------------------------
+    The solver reports convergence only when:
 
         Cartesian error <= tolerance
 
-    and:
+    AND:
 
-        obstacle clearance >= safety distance
+        Current obstacle clearance
+        >= obstacle_safety_distance
+
+    AND:
+
+        Minimum sampled trajectory clearance
+        >= obstacle_safety_distance
     """
 
     target_position = np.asarray(
@@ -680,6 +1130,42 @@ def solve_obstacle_aware_ik(
         )
 
     # =================================================
+    # INITIAL SAFETY
+    # =================================================
+
+    initial_obstacle = (
+        minimum_obstacle_clearance(
+            q=q,
+            d6=d6,
+            obstacle_center=(
+                obstacle_center
+            ),
+            obstacle_radius=(
+                obstacle_radius
+            ),
+            link_radius=(
+                link_radius
+            )
+        )
+    )
+
+    initial_clearance = float(
+        initial_obstacle[
+            "clearance"
+        ]
+    )
+
+    if (
+        use_safety_filter
+        and initial_clearance
+        < obstacle_safety_distance
+    ):
+        raise ValueError(
+            "Initial robot configuration violates "
+            "the requested obstacle safety distance."
+        )
+
+    # =================================================
     # HISTORIES
     # =================================================
 
@@ -699,13 +1185,23 @@ def solve_obstacle_aware_ik(
     singularity_activity_history = []
     joint_limit_activity_history = []
     obstacle_activity_history = []
-
     secondary_activity_history = []
+
+    safety_filter_corrected_history = []
+    safety_filter_accepted_history = []
+    safety_filter_scale_history = []
+    safety_filter_backtracking_history = []
+
+    minimum_path_clearance_history = []
 
     q_history = []
     d6_history = []
 
     converged = False
+
+    minimum_trajectory_clearance = (
+        initial_clearance
+    )
 
     # =================================================
     # ITERATIVE SOLVER
@@ -777,6 +1273,11 @@ def solve_obstacle_aware_ik(
             ]
         )
 
+        minimum_trajectory_clearance = min(
+            minimum_trajectory_clearance,
+            current_clearance
+        )
+
         current_obstacle_activation = (
             obstacle_activation(
                 clearance=(
@@ -838,17 +1339,23 @@ def solve_obstacle_aware_ik(
         )
 
         # ---------------------------------------------
-        # CONVERGENCE
+        # STRONG CONVERGENCE CONDITION
         # ---------------------------------------------
 
-        obstacle_safe = (
+        current_safe = (
             current_clearance
+            >= obstacle_safety_distance
+        )
+
+        trajectory_safe = (
+            minimum_trajectory_clearance
             >= obstacle_safety_distance
         )
 
         if (
             error_norm <= tolerance
-            and obstacle_safe
+            and current_safe
+            and trajectory_safe
         ):
 
             converged = True
@@ -858,78 +1365,101 @@ def solve_obstacle_aware_ik(
         # CONTROL STEP
         # ---------------------------------------------
 
-        result = obstacle_aware_ik_step(
-            q=q,
-            d6=d6,
+        result = (
+            obstacle_aware_ik_step(
+                q=q,
+                d6=d6,
 
-            target_position=(
-                target_position
-            ),
+                target_position=(
+                    target_position
+                ),
 
-            obstacle_center=(
-                obstacle_center
-            ),
+                obstacle_center=(
+                    obstacle_center
+                ),
 
-            obstacle_radius=(
-                obstacle_radius
-            ),
+                obstacle_radius=(
+                    obstacle_radius
+                ),
 
-            link_radius=(
-                link_radius
-            ),
+                link_radius=(
+                    link_radius
+                ),
 
-            step_size=(
-                step_size
-            ),
+                step_size=(
+                    step_size
+                ),
 
-            singularity_gain=(
-                singularity_gain
-            ),
+                singularity_gain=(
+                    singularity_gain
+                ),
 
-            joint_limit_gain=(
-                joint_limit_gain
-            ),
+                joint_limit_gain=(
+                    joint_limit_gain
+                ),
 
-            obstacle_gain=(
-                obstacle_gain
-            ),
+                obstacle_gain=(
+                    obstacle_gain
+                ),
 
-            joint_limit_activation=(
-                joint_limit_activation
-            ),
+                joint_limit_activation=(
+                    joint_limit_activation
+                ),
 
-            joint_limit_max_multiplier=(
-                joint_limit_max_multiplier
-            ),
+                joint_limit_max_multiplier=(
+                    joint_limit_max_multiplier
+                ),
 
-            safety_margin=(
-                safety_margin
-            ),
+                safety_margin=(
+                    safety_margin
+                ),
 
-            obstacle_safety_distance=(
-                obstacle_safety_distance
-            ),
+                obstacle_safety_distance=(
+                    obstacle_safety_distance
+                ),
 
-            obstacle_influence_distance=(
-                obstacle_influence_distance
-            ),
+                obstacle_influence_distance=(
+                    obstacle_influence_distance
+                ),
 
-            sigma_threshold=(
-                sigma_threshold
-            ),
+                use_safety_filter=(
+                    use_safety_filter
+                ),
 
-            lambda_min=(
-                lambda_min
-            ),
+                safety_filter_buffer=(
+                    safety_filter_buffer
+                ),
 
-            lambda_max=(
-                lambda_max
+                safety_filter_samples=(
+                    safety_filter_samples
+                ),
+
+                safety_filter_backtracking_factor=(
+                    safety_filter_backtracking_factor
+                ),
+
+                safety_filter_max_backtracking_steps=(
+                    safety_filter_max_backtracking_steps
+                ),
+
+                sigma_threshold=(
+                    sigma_threshold
+                ),
+
+                lambda_min=lambda_min,
+                lambda_max=lambda_max
             )
         )
 
         q = result["q"]
-
         d6 = result["d6"]
+
+        minimum_trajectory_clearance = min(
+            minimum_trajectory_clearance,
+            result[
+                "minimum_path_clearance"
+            ]
+        )
 
         damping_history.append(
             result[
@@ -974,6 +1504,46 @@ def solve_obstacle_aware_ik(
                         "secondary_delta"
                     ]
                 )
+            )
+        )
+
+        safety_filter_corrected_history.append(
+            bool(
+                result[
+                    "safety_filter_corrected"
+                ]
+            )
+        )
+
+        safety_filter_accepted_history.append(
+            bool(
+                result[
+                    "safety_filter_accepted"
+                ]
+            )
+        )
+
+        safety_filter_scale_history.append(
+            float(
+                result[
+                    "safety_filter_scale"
+                ]
+            )
+        )
+
+        safety_filter_backtracking_history.append(
+            int(
+                result[
+                    "safety_filter_backtracking_steps"
+                ]
+            )
+        )
+
+        minimum_path_clearance_history.append(
+            float(
+                result[
+                    "minimum_path_clearance"
+                ]
             )
         )
 
@@ -1043,6 +1613,16 @@ def solve_obstacle_aware_ik(
         ]
     )
 
+    minimum_trajectory_clearance = min(
+        minimum_trajectory_clearance,
+        final_clearance
+    )
+
+    trajectory_safe = bool(
+        minimum_trajectory_clearance
+        >= obstacle_safety_distance
+    )
+
     # =================================================
     # RETURN
     # =================================================
@@ -1079,8 +1659,22 @@ def solve_obstacle_aware_ik(
             final_cost
         ),
 
+        "initial_obstacle_clearance": (
+            initial_clearance
+        ),
+
         "final_obstacle_clearance": (
             final_clearance
+        ),
+
+        "minimum_trajectory_clearance": (
+            float(
+                minimum_trajectory_clearance
+            )
+        ),
+
+        "trajectory_safety_satisfied": (
+            trajectory_safe
         ),
 
         "final_closest_obstacle_link": (
@@ -1090,11 +1684,14 @@ def solve_obstacle_aware_ik(
         ),
 
         "collision": bool(
-            final_clearance <= 0.0
+            minimum_trajectory_clearance <= 0.0
         ),
 
         "converged": (
-            converged
+            bool(
+                converged
+                and trajectory_safe
+            )
         ),
 
         "iterations": (
@@ -1151,6 +1748,41 @@ def solve_obstacle_aware_ik(
 
         "secondary_activity_history": np.asarray(
             secondary_activity_history
+        ),
+
+        "safety_filter_corrected_history": (
+            np.asarray(
+                safety_filter_corrected_history,
+                dtype=bool
+            )
+        ),
+
+        "safety_filter_accepted_history": (
+            np.asarray(
+                safety_filter_accepted_history,
+                dtype=bool
+            )
+        ),
+
+        "safety_filter_scale_history": (
+            np.asarray(
+                safety_filter_scale_history,
+                dtype=float
+            )
+        ),
+
+        "safety_filter_backtracking_history": (
+            np.asarray(
+                safety_filter_backtracking_history,
+                dtype=int
+            )
+        ),
+
+        "minimum_path_clearance_history": (
+            np.asarray(
+                minimum_path_clearance_history,
+                dtype=float
+            )
         ),
 
         "q_history": np.asarray(
