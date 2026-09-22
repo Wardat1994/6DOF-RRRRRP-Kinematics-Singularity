@@ -1232,7 +1232,6 @@ fig2.savefig(
     bbox_inches="tight"
 )
 
-
 # =====================================================
 # PLOT 3 — ACTIVE OBSTACLES
 # =====================================================
@@ -1248,18 +1247,23 @@ active_history = np.asarray(
     dtype=int
 )
 
+active_steps = np.arange(
+    len(active_history)
+)
+
 ax3.step(
-    np.arange(
-        len(
-            active_history
-        )
-    ),
-
+    active_steps,
     active_history,
-
     where="post",
+    linewidth=2,
+    label="Active Obstacles"
+)
 
-    linewidth=2
+ax3.scatter(
+    active_steps,
+    active_history,
+    s=35,
+    zorder=3
 )
 
 ax3.set_xlabel(
@@ -1271,7 +1275,7 @@ ax3.set_ylabel(
 )
 
 ax3.set_title(
-    "Number of Active Obstacles"
+    "Multi-Obstacle Activation History"
 )
 
 ax3.set_yticks([
@@ -1289,6 +1293,8 @@ ax3.grid(
     True
 )
 
+ax3.legend()
+
 fig3.tight_layout()
 
 fig3.savefig(
@@ -1300,20 +1306,12 @@ fig3.savefig(
     bbox_inches="tight"
 )
 
-
 # =====================================================
-# PLOT 4 — SAFETY FILTER ACTIVITY
+# PLOT 4 — SAFETY FILTER INTERVENTION
 # =====================================================
 
 fig4, ax4 = plt.subplots(
     figsize=(10, 6)
-)
-
-safety_scale_history = np.asarray(
-    multi_result[
-        "safety_filter_scale_history"
-    ],
-    dtype=float
 )
 
 corrected_history = np.asarray(
@@ -1323,46 +1321,74 @@ corrected_history = np.asarray(
     dtype=bool
 )
 
-steps = np.arange(
-    len(
-        safety_scale_history
-    )
+safety_scale_history = np.asarray(
+    multi_result[
+        "safety_filter_scale_history"
+    ],
+    dtype=float
 )
 
-ax4.plot(
-    steps,
+safety_steps = np.arange(
+    len(corrected_history)
+)
 
-    safety_scale_history,
+intervention_history = (
+    corrected_history.astype(int)
+)
 
+ax4.step(
+    safety_steps,
+    intervention_history,
+    where="post",
     linewidth=2,
-
-    label="Backtracking Scale"
+    label="Safety Correction"
 )
 
+ax4.scatter(
+    safety_steps,
+    intervention_history,
+    s=35,
+    zorder=3
+)
 
 corrected_indices = np.flatnonzero(
     corrected_history
 )
 
-
-if len(
-    corrected_indices
-) > 0:
+if len(corrected_indices) > 0:
 
     ax4.scatter(
         corrected_indices,
-
-        safety_scale_history[
-            corrected_indices
-        ],
-
-        s=60,
-
+        np.ones(
+            len(corrected_indices)
+        ),
+        s=90,
         marker="x",
+        label="Corrected Step",
+        zorder=4
+    )
 
-        label=(
-            "Safety-Corrected Step"
-        )
+
+backtracked_indices = np.flatnonzero(
+    safety_scale_history
+    < (
+        1.0
+        - 1e-12
+    )
+)
+
+if len(backtracked_indices) > 0:
+
+    ax4.scatter(
+        backtracked_indices,
+        np.full(
+            len(backtracked_indices),
+            0.85
+        ),
+        s=90,
+        marker="v",
+        label="Backtracked Step",
+        zorder=5
     )
 
 
@@ -1371,11 +1397,26 @@ ax4.set_xlabel(
 )
 
 ax4.set_ylabel(
-    "Safety Filter Scale"
+    "Safety Correction Applied"
 )
 
 ax4.set_title(
-    "Multi-Obstacle Safety Filter Activity"
+    "Multi-Obstacle Safety-Filter Intervention History"
+)
+
+ax4.set_yticks([
+    0,
+    1,
+])
+
+ax4.set_yticklabels([
+    "No",
+    "Yes",
+])
+
+ax4.set_ylim(
+    -0.15,
+    1.15
 )
 
 ax4.grid(
@@ -1388,13 +1429,12 @@ fig4.tight_layout()
 
 fig4.savefig(
     results_dir
-    / "multi_obstacle_safety_filter_scale.png",
+    / "multi_obstacle_safety_filter_activity.png",
 
     dpi=300,
 
     bbox_inches="tight"
 )
-
 
 # =====================================================
 # PLOT 5 — SIGMA MIN
@@ -1576,6 +1616,20 @@ v = np.linspace(
     30
 )
 
+label_offsets = [
+    np.array([
+        -0.10,
+        0.02,
+        0.14
+    ]),
+
+    np.array([
+        0.10,
+        -0.02,
+        0.17
+    ]),
+]
+
 
 for obstacle_index, obstacle in enumerate(
     obstacles
@@ -1596,9 +1650,7 @@ for obstacle_index, obstacle in enumerate(
 
     sphere_x = (
         center[0]
-
         + radius
-
         * np.outer(
             np.cos(u),
             np.sin(v)
@@ -1607,9 +1659,7 @@ for obstacle_index, obstacle in enumerate(
 
     sphere_y = (
         center[1]
-
         + radius
-
         * np.outer(
             np.sin(u),
             np.sin(v)
@@ -1618,9 +1668,7 @@ for obstacle_index, obstacle in enumerate(
 
     sphere_z = (
         center[2]
-
         + radius
-
         * np.outer(
             np.ones_like(u),
             np.cos(v)
@@ -1631,67 +1679,37 @@ for obstacle_index, obstacle in enumerate(
         sphere_x,
         sphere_y,
         sphere_z,
-        alpha=0.35
+        alpha=0.22
     )
 
-    label_offset = np.array([
-        0.0,
-        0.0,
-        0.13
-        + 0.03
-        * obstacle_index
-    ])
+    # Mark the physical obstacle center.
+    ax6.scatter(
+        center[0],
+        center[1],
+        center[2],
+        s=45,
+        marker="o"
+    )
 
     label_position = (
         center
-        + label_offset
+        + label_offsets[
+            obstacle_index
+        ]
     )
 
     ax6.text(
         label_position[0],
-
         label_position[1],
-
         label_position[2],
-
-        obstacle[
-            "name"
-        ]
+        f"O{obstacle_index + 1}",
+        fontsize=11,
+        fontweight="bold",
+        bbox={
+            "boxstyle": "round,pad=0.25",
+            "alpha": 0.75,
+        }
     )
-
-
-ax6.set_xlabel(
-    "X [m]"
-)
-
-ax6.set_ylabel(
-    "Y [m]"
-)
-
-ax6.set_zlabel(
-    "Z [m]"
-)
-
-ax6.set_title(
-    "Multi-Obstacle Safety-Constrained IK"
-)
-
-ax6.grid(
-    True
-)
-
-ax6.legend()
-
-fig6.tight_layout()
-
-fig6.savefig(
-    results_dir
-    / "multi_obstacle_path_comparison.png",
-
-    dpi=300,
-
-    bbox_inches="tight"
-)
 
 
 # =====================================================
