@@ -112,10 +112,6 @@ link_radius = 0.05
 
 obstacle_safety_distance = 0.10
 
-# Smaller influence region than the original
-# experiment.
-#
-# The safety distance remains 0.10 m.
 obstacle_influence_distance = 0.25
 
 obstacle_gain = 0.03
@@ -195,6 +191,7 @@ def calculate_single_clearance(
     result = (
         minimum_multi_obstacle_clearance(
             q=q,
+
             d6=d6,
 
             obstacles=obstacle,
@@ -308,14 +305,12 @@ def generate_obstacle_candidates():
         )
     )
 
-    # Major physical robot links.
     candidate_link_indices = [
         1,
         2,
         3,
     ]
 
-    # Desired baseline clearances.
     desired_clearances = [
         0.02,
         0.03,
@@ -427,9 +422,11 @@ def generate_obstacle_candidates():
                             baseline_result[
                                 "q"
                             ],
+
                             baseline_result[
                                 "d6"
                             ],
+
                             center
                         )
                     )
@@ -438,12 +435,11 @@ def generate_obstacle_candidates():
                     # VALID CHALLENGING CANDIDATE
                     # ---------------------------------
                     #
-                    # During the baseline trajectory:
-                    #
-                    #     clearance < safety distance
-                    #
-                    # while the initial and final
-                    # configurations remain safe.
+                    # Candidate should violate the
+                    # desired safety distance during
+                    # the baseline trajectory while
+                    # initial and final states remain
+                    # safely outside the obstacle.
                     # ---------------------------------
 
                     if (
@@ -498,8 +494,9 @@ def generate_obstacle_candidates():
 
     return candidates
 
+
 # =====================================================
-# SELECT TWO DISTINCT CHALLENGING OBSTACLES
+# SELECT BEST GLOBAL PAIR OF CHALLENGING OBSTACLES
 # =====================================================
 
 def select_two_obstacles():
@@ -525,6 +522,10 @@ def select_two_obstacles():
         1
     )
 
+    # =================================================
+    # PREFERRED TEMPORAL LOCATIONS
+    # =================================================
+
     first_target_index = (
         0.30
         * trajectory_span
@@ -536,59 +537,16 @@ def select_two_obstacles():
     )
 
     # =================================================
-    # FIRST OBSTACLE
-    # =================================================
-
-    first_candidates = [
-        candidate
-        for candidate in candidates
-        if (
-            candidate[
-                "state_index"
-            ]
-            <= (
-                0.50
-                * trajectory_span
-            )
-        )
-    ]
-
-    if len(first_candidates) == 0:
-        first_candidates = candidates
-
-    first = min(
-        first_candidates,
-        key=lambda item: (
-            abs(
-                item[
-                    "state_index"
-                ]
-                - first_target_index
-            )
-            / trajectory_span
-            +
-            3.0
-            * abs(
-                item[
-                    "clearance"
-                ]
-                - 0.03
-            )
-        )
-    )
-
-    # =================================================
-    # REQUIRED VISUAL / PHYSICAL SEPARATION
+    # PREFERRED PHYSICAL SEPARATION
     # =================================================
     #
-    # Two obstacle spheres each have radius 0.10 m.
+    # Each obstacle radius = 0.10 m.
     #
-    # Therefore:
+    # 0.20 m center separation:
+    # spheres are touching.
     #
-    #     2 * radius = 0.20 m
-    #
-    # Add another 0.01 m so their surfaces are visibly
-    # separated instead of touching or overlapping.
+    # 0.21 m center separation:
+    # approximately 1 cm surface gap.
     # =================================================
 
     preferred_center_separation = (
@@ -597,176 +555,306 @@ def select_two_obstacles():
         + 0.01
     )
 
+    pair_candidates = []
+
     # =================================================
-    # BUILD SECOND-OBSTACLE CANDIDATES
+    # GLOBAL PAIR SEARCH
     # =================================================
 
-    all_second_candidates = []
+    for candidate_a_index in range(
+        len(candidates) - 1
+    ):
 
-    for candidate in candidates:
+        for candidate_b_index in range(
+            candidate_a_index + 1,
+            len(candidates)
+        ):
 
-        center_separation = float(
-            np.linalg.norm(
-                candidate[
-                    "center"
-                ]
-                - first[
-                    "center"
+            candidate_a = (
+                candidates[
+                    candidate_a_index
                 ]
             )
-        )
 
-        index_separation = abs(
-            candidate[
-                "state_index"
-            ]
-            - first[
-                "state_index"
-            ]
-        )
+            candidate_b = (
+                candidates[
+                    candidate_b_index
+                ]
+            )
 
-        # Reject effectively identical candidates.
-        if (
-            center_separation
-            <= 1e-3
-            and index_separation == 0
-        ):
-            continue
+            center_separation = float(
+                np.linalg.norm(
+                    candidate_a[
+                        "center"
+                    ]
+                    - candidate_b[
+                        "center"
+                    ]
+                )
+            )
 
-        all_second_candidates.append({
-            **candidate,
+            index_separation = abs(
+                candidate_a[
+                    "state_index"
+                ]
+                - candidate_b[
+                    "state_index"
+                ]
+            )
 
-            "_center_separation": (
+            # Reject effectively identical candidates.
+            if (
                 center_separation
-            ),
+                <= 1e-3
+                and index_separation == 0
+            ):
+                continue
 
-            "_index_separation": (
+            # =================================================
+            # ORDER PAIR TEMPORALLY
+            # =================================================
+
+            if (
+                candidate_a[
+                    "state_index"
+                ]
+                <= candidate_b[
+                    "state_index"
+                ]
+            ):
+
+                first = (
+                    candidate_a
+                )
+
+                second = (
+                    candidate_b
+                )
+
+            else:
+
+                first = (
+                    candidate_b
+                )
+
+                second = (
+                    candidate_a
+                )
+
+            # =================================================
+            # TEMPORAL TARGET QUALITY
+            # =================================================
+
+            temporal_target_error = (
+                abs(
+                    first[
+                        "state_index"
+                    ]
+                    - first_target_index
+                )
+                / trajectory_span
+
+                +
+
+                abs(
+                    second[
+                        "state_index"
+                    ]
+                    - second_target_index
+                )
+                / trajectory_span
+            )
+
+            # =================================================
+            # CLEARANCE QUALITY
+            # =================================================
+            #
+            # Prefer baseline clearance around 0.03 m:
+            # challenging but not unnecessarily extreme.
+            # =================================================
+
+            clearance_error = (
+                abs(
+                    first[
+                        "clearance"
+                    ]
+                    - 0.03
+                )
+
+                +
+
+                abs(
+                    second[
+                        "clearance"
+                    ]
+                    - 0.03
+                )
+            )
+
+            normalized_temporal_separation = (
                 index_separation
-            ),
-        })
+                / trajectory_span
+            )
 
-    if len(all_second_candidates) == 0:
+            # =================================================
+            # GLOBAL PAIR SCORE
+            # =================================================
+            #
+            # Lower score is better.
+            #
+            # Reward:
+            # - temporal separation,
+            # - spatial separation.
+            #
+            # Penalize:
+            # - deviation from desired trajectory positions,
+            # - deviation from desired baseline clearance.
+            # =================================================
+
+            score = (
+                temporal_target_error
+
+                + 3.0
+                * clearance_error
+
+                - 1.5
+                * normalized_temporal_separation
+
+                - 2.0
+                * center_separation
+            )
+
+            pair_candidates.append({
+                "first": first,
+
+                "second": second,
+
+                "center_separation": (
+                    center_separation
+                ),
+
+                "index_separation": (
+                    index_separation
+                ),
+
+                "score": float(
+                    score
+                ),
+
+                "non_overlapping": bool(
+                    center_separation
+                    >= preferred_center_separation
+                ),
+
+                "temporally_separated": bool(
+                    index_separation
+                    >= 2
+                ),
+            })
+
+    if len(pair_candidates) == 0:
+
         raise RuntimeError(
-            "Could not generate two distinct "
-            "obstacle candidates."
+            "Could not generate any valid "
+            "obstacle pair."
         )
 
     # =================================================
-    # PREFER NON-OVERLAPPING OBSTACLES
+    # PRIORITY 1
+    # NON-OVERLAPPING + TEMPORALLY SEPARATED
     # =================================================
 
-    separated_candidates = [
-        candidate
-        for candidate in all_second_candidates
+    preferred_pairs = [
+        pair
+        for pair in pair_candidates
         if (
-            candidate[
-                "_center_separation"
+            pair[
+                "non_overlapping"
             ]
-            >= preferred_center_separation
+
+            and pair[
+                "temporally_separated"
+            ]
         )
     ]
 
-    # If the geometry provides a truly separated pair,
-    # use only those candidates.
-    #
-    # Otherwise, fall back gracefully to the best
-    # available distinct obstacle instead of stopping
-    # the experiment.
-    if len(separated_candidates) > 0:
+    # =================================================
+    # PRIORITY 2
+    # NON-OVERLAPPING
+    # =================================================
 
-        second_candidates = (
-            separated_candidates
-        )
+    if len(
+        preferred_pairs
+    ) == 0:
 
-    else:
+        preferred_pairs = [
+            pair
+            for pair in pair_candidates
+            if pair[
+                "non_overlapping"
+            ]
+        ]
 
-        second_candidates = (
-            all_second_candidates
+    # =================================================
+    # PRIORITY 3
+    # TEMPORALLY SEPARATED
+    # =================================================
+
+    if len(
+        preferred_pairs
+    ) == 0:
+
+        preferred_pairs = [
+            pair
+            for pair in pair_candidates
+            if pair[
+                "temporally_separated"
+            ]
+        ]
+
+    # =================================================
+    # FINAL FALLBACK
+    # =================================================
+
+    if len(
+        preferred_pairs
+    ) == 0:
+
+        preferred_pairs = (
+            pair_candidates
         )
 
     # =================================================
-    # SECOND-OBSTACLE SCORE
+    # SELECT BEST GLOBAL PAIR
     # =================================================
 
-    def second_score(item):
+    best_pair = min(
+        preferred_pairs,
 
-        temporal_target_error = (
-            abs(
-                item[
-                    "state_index"
-                ]
-                - second_target_index
-            )
-            / trajectory_span
-        )
-
-        clearance_error = abs(
-            item[
-                "clearance"
-            ]
-            - 0.03
-        )
-
-        temporal_separation = (
-            item[
-                "_index_separation"
-            ]
-            / trajectory_span
-        )
-
-        spatial_separation = (
-            item[
-                "_center_separation"
+        key=lambda pair: (
+            pair[
+                "score"
             ]
         )
-
-        return (
-            temporal_target_error
-
-            + 3.0
-            * clearance_error
-
-            - 1.5
-            * temporal_separation
-
-            - 2.0
-            * spatial_separation
-        )
-
-    second = min(
-        second_candidates,
-        key=second_score
     )
 
-    second = {
-        key: value
-        for key, value
-        in second.items()
-        if not key.startswith("_")
-    }
-
-    # =================================================
-    # ORDER BY TRAJECTORY LOCATION
-    # =================================================
-
-    if (
-        second[
-            "state_index"
+    first = (
+        best_pair[
+            "first"
         ]
-        < first[
-            "state_index"
-        ]
-    ):
+    )
 
-        first, second = (
-            second,
-            first
-        )
+    second = (
+        best_pair[
+            "second"
+        ]
+    )
 
     return (
         first,
         second
     )
+
 
 # =====================================================
 # SELECT OBSTACLES
@@ -824,7 +912,9 @@ obstacle_center_separation = float(
             ],
             dtype=float
         )
+
         -
+
         np.asarray(
             obstacles[1][
                 "center"
@@ -836,7 +926,7 @@ obstacle_center_separation = float(
 
 
 # =====================================================
-# TEMPORAL SEPARATION
+# OBSTACLE TEMPORAL SEPARATION
 # =====================================================
 
 obstacle_iteration_separation = abs(
@@ -938,6 +1028,7 @@ for q_state, d6_state in zip(
     baseline_result[
         "q_history"
     ],
+
     baseline_result[
         "d6_history"
     ]
@@ -1249,11 +1340,10 @@ ax4.plot(
 )
 
 
-# Mark steps where the linear safety filter
-# modified the nominal motion.
 corrected_indices = np.flatnonzero(
     corrected_history
 )
+
 
 if len(
     corrected_indices
@@ -1506,7 +1596,9 @@ for obstacle_index, obstacle in enumerate(
 
     sphere_x = (
         center[0]
+
         + radius
+
         * np.outer(
             np.cos(u),
             np.sin(v)
@@ -1515,7 +1607,9 @@ for obstacle_index, obstacle in enumerate(
 
     sphere_y = (
         center[1]
+
         + radius
+
         * np.outer(
             np.sin(u),
             np.sin(v)
@@ -1524,7 +1618,9 @@ for obstacle_index, obstacle in enumerate(
 
     sphere_z = (
         center[2]
+
         + radius
+
         * np.outer(
             np.ones_like(u),
             np.cos(v)
@@ -1538,7 +1634,6 @@ for obstacle_index, obstacle in enumerate(
         alpha=0.35
     )
 
-    # Slightly offset labels vertically.
     label_offset = np.array([
         0.0,
         0.0,
