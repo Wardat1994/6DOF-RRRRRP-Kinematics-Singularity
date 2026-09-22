@@ -112,7 +112,13 @@ link_radius = 0.05
 
 obstacle_safety_distance = 0.10
 
-obstacle_influence_distance = 0.40
+# Reduced from 0.40 m.
+#
+# This makes the avoidance objective activate only
+# when an obstacle is meaningfully close to the robot.
+#
+# The required safety distance remains unchanged.
+obstacle_influence_distance = 0.25
 
 obstacle_gain = 0.03
 
@@ -297,6 +303,7 @@ def generate_obstacle_candidates():
         )
     )
 
+    # Major non-zero physical robot links.
     candidate_link_indices = [
         1,
         2,
@@ -420,6 +427,20 @@ def generate_obstacle_candidates():
                         )
                     )
 
+                    # ---------------------------------
+                    # VALID CHALLENGING CANDIDATE
+                    # ---------------------------------
+                    #
+                    # During the baseline motion:
+                    #
+                    # clearance < safety distance
+                    #
+                    # while:
+                    #
+                    # initial and final configurations
+                    # remain safely outside the obstacle.
+                    # ---------------------------------
+
                     if (
                         current_clearance
                         > 0.005
@@ -471,7 +492,7 @@ def generate_obstacle_candidates():
 
 
 # =====================================================
-# SELECT TWO DISTINCT CHALLENGING OBSTACLES
+# SELECT TWO SEPARATED CHALLENGING OBSTACLES
 # =====================================================
 
 def select_two_obstacles():
@@ -493,30 +514,79 @@ def select_two_obstacles():
         ]
     )
 
+    # =================================================
+    # DESIRED TEMPORAL LOCATIONS
+    # =================================================
+    #
+    # Obstacle 1:
+    #
+    # Around the first third of the baseline motion.
+    #
+    # Obstacle 2:
+    #
+    # Around the last third of the baseline motion.
+    #
+    # This produces a more meaningful multi-obstacle
+    # experiment than placing both obstacles at almost
+    # the same location.
+    # =================================================
+
     first_target_index = (
-        0.35
+        0.30
         * (
             number_of_states - 1
         )
     )
 
     second_target_index = (
-        0.70
+        0.72
         * (
             number_of_states - 1
         )
     )
 
+    # =================================================
+    # FIRST OBSTACLE
+    # =================================================
+
+    first_candidates = [
+        candidate
+        for candidate in candidates
+        if (
+            candidate[
+                "state_index"
+            ]
+            <= (
+                0.50
+                * (
+                    number_of_states
+                    - 1
+                )
+            )
+        )
+    ]
+
+    if len(
+        first_candidates
+    ) == 0:
+
+        first_candidates = (
+            candidates
+        )
+
     first = min(
-        candidates,
+        first_candidates,
+
         key=lambda item: (
+
             abs(
                 item[
                     "state_index"
                 ]
                 - first_target_index
             )
-            + 4.0
+
+            + 5.0
             * abs(
                 item[
                     "clearance"
@@ -526,11 +596,27 @@ def select_two_obstacles():
         )
     )
 
+    # =================================================
+    # SECOND OBSTACLE
+    # =================================================
+
     second_candidates = []
 
     for candidate in candidates:
 
-        index_separation = abs(
+        # Second obstacle must occur later
+        # in the trajectory.
+        if (
+            candidate[
+                "state_index"
+            ]
+            <= first[
+                "state_index"
+            ]
+        ):
+            continue
+
+        index_separation = (
             candidate[
                 "state_index"
             ]
@@ -550,50 +636,97 @@ def select_two_obstacles():
             )
         )
 
-        if (
-            index_separation >= 2
-            and center_separation >= 0.25
-        ):
-            second_candidates.append(
-                candidate
-            )
+        # ---------------------------------------------
+        # STRONG SEPARATION REQUIREMENT
+        # ---------------------------------------------
+
+        if index_separation < 4:
+            continue
+
+        if center_separation < 0.40:
+            continue
+
+        second_candidates.append(
+            candidate
+        )
+
+    # =================================================
+    # RELAXED FALLBACK
+    # =================================================
+    #
+    # If the baseline geometry does not provide
+    # candidates satisfying the strong requirements,
+    # relax them slightly while still requiring the
+    # obstacles to be meaningfully separated.
+    # =================================================
 
     if len(
         second_candidates
     ) == 0:
 
-        second_candidates = [
-            candidate
-            for candidate in candidates
-            if not np.allclose(
+        for candidate in candidates:
+
+            if (
                 candidate[
-                    "center"
-                ],
-                first[
-                    "center"
+                    "state_index"
+                ]
+                <= first[
+                    "state_index"
+                ]
+            ):
+                continue
+
+            index_separation = (
+                candidate[
+                    "state_index"
+                ]
+                - first[
+                    "state_index"
                 ]
             )
-        ]
+
+            center_separation = float(
+                np.linalg.norm(
+                    candidate[
+                        "center"
+                    ]
+                    - first[
+                        "center"
+                    ]
+                )
+            )
+
+            if (
+                index_separation >= 3
+                and center_separation >= 0.30
+            ):
+
+                second_candidates.append(
+                    candidate
+                )
 
     if len(
         second_candidates
     ) == 0:
 
         raise RuntimeError(
-            "Could not generate two distinct "
-            "obstacles."
+            "Could not generate two sufficiently "
+            "separated obstacle locations."
         )
 
     second = min(
         second_candidates,
+
         key=lambda item: (
+
             abs(
                 item[
                     "state_index"
                 ]
                 - second_target_index
             )
-            + 4.0
+
+            + 5.0
             * abs(
                 item[
                     "clearance"
@@ -621,27 +754,48 @@ first_design, second_design = (
 obstacles = [
     {
         "name": "Obstacle 1",
+
         "center": (
             first_design[
                 "center"
             ]
         ),
+
         "radius": (
             obstacle_radius
         ),
     },
+
     {
         "name": "Obstacle 2",
+
         "center": (
             second_design[
                 "center"
             ]
         ),
+
         "radius": (
             obstacle_radius
         ),
     },
 ]
+
+
+# =====================================================
+# OBSTACLE CENTER SEPARATION
+# =====================================================
+
+obstacle_center_separation = float(
+    np.linalg.norm(
+        obstacles[0][
+            "center"
+        ]
+        - obstacles[1][
+            "center"
+        ]
+    )
+)
 
 
 # =====================================================
@@ -730,9 +884,11 @@ multi_result = (
 baseline_clearance_history = []
 
 for q_state, d6_state in zip(
+
     baseline_result[
         "q_history"
     ],
+
     baseline_result[
         "d6_history"
     ]
@@ -741,11 +897,16 @@ for q_state, d6_state in zip(
     result = (
         minimum_multi_obstacle_clearance(
             q=q_state,
+
             d6=float(
                 d6_state
             ),
+
             obstacles=obstacles,
-            link_radius=link_radius
+
+            link_radius=(
+                link_radius
+            )
         )
     )
 
@@ -805,13 +966,17 @@ fig1, ax1 = plt.subplots(
 ax1.plot(
     baseline_clearance_history,
     linewidth=2,
-    label="Baseline Multi-Objective IK"
+    label=(
+        "Baseline Multi-Objective IK"
+    )
 )
 
 ax1.plot(
     multi_clearance_history,
     linewidth=2,
-    label="Multi-Obstacle Safety IK"
+    label=(
+        "Multi-Obstacle Safety IK"
+    )
 )
 
 ax1.axhline(
@@ -819,6 +984,13 @@ ax1.axhline(
     linestyle="--",
     linewidth=2,
     label="Safety Distance"
+)
+
+ax1.axhline(
+    obstacle_influence_distance,
+    linestyle=":",
+    linewidth=1.5,
+    label="Influence Distance"
 )
 
 ax1.set_xlabel(
@@ -833,7 +1005,9 @@ ax1.set_title(
     "Multi-Obstacle Clearance Comparison"
 )
 
-ax1.grid(True)
+ax1.grid(
+    True
+)
 
 ax1.legend()
 
@@ -842,7 +1016,9 @@ fig1.tight_layout()
 fig1.savefig(
     results_dir
     / "multi_obstacle_clearance_comparison.png",
+
     dpi=300,
+
     bbox_inches="tight"
 )
 
@@ -859,16 +1035,24 @@ ax2.semilogy(
     baseline_result[
         "error_history"
     ],
+
     linewidth=2,
-    label="Baseline Multi-Objective IK"
+
+    label=(
+        "Baseline Multi-Objective IK"
+    )
 )
 
 ax2.semilogy(
     multi_result[
         "error_history"
     ],
+
     linewidth=2,
-    label="Multi-Obstacle Safety IK"
+
+    label=(
+        "Multi-Obstacle Safety IK"
+    )
 )
 
 ax2.set_xlabel(
@@ -883,7 +1067,9 @@ ax2.set_title(
     "Cartesian Error Comparison"
 )
 
-ax2.grid(True)
+ax2.grid(
+    True
+)
 
 ax2.legend()
 
@@ -892,7 +1078,9 @@ fig2.tight_layout()
 fig2.savefig(
     results_dir
     / "multi_obstacle_error_comparison.png",
+
     dpi=300,
+
     bbox_inches="tight"
 )
 
@@ -905,18 +1093,23 @@ fig3, ax3 = plt.subplots(
     figsize=(10, 6)
 )
 
+active_history = (
+    multi_result[
+        "active_obstacle_count_history"
+    ]
+)
+
 ax3.step(
     np.arange(
         len(
-            multi_result[
-                "active_obstacle_count_history"
-            ]
+            active_history
         )
     ),
-    multi_result[
-        "active_obstacle_count_history"
-    ],
+
+    active_history,
+
     where="post",
+
     linewidth=2
 )
 
@@ -932,32 +1125,100 @@ ax3.set_title(
     "Number of Active Obstacles"
 )
 
-ax3.grid(True)
+ax3.set_yticks(
+    [
+        0,
+        1,
+        2,
+    ]
+)
+
+ax3.set_ylim(
+    -0.15,
+    2.15
+)
+
+ax3.grid(
+    True
+)
 
 fig3.tight_layout()
 
 fig3.savefig(
     results_dir
     / "multi_obstacle_active_count.png",
+
     dpi=300,
+
     bbox_inches="tight"
 )
 
 
 # =====================================================
-# PLOT 4 — SAFETY FILTER SCALE
+# PLOT 4 — SAFETY FILTER ACTIVITY
 # =====================================================
 
 fig4, ax4 = plt.subplots(
     figsize=(10, 6)
 )
 
-ax4.plot(
+safety_scale_history = (
     multi_result[
         "safety_filter_scale_history"
-    ],
-    linewidth=2
+    ]
 )
+
+corrected_history = (
+    multi_result[
+        "safety_filter_corrected_history"
+    ]
+)
+
+steps = np.arange(
+    len(
+        safety_scale_history
+    )
+)
+
+ax4.plot(
+    steps,
+
+    safety_scale_history,
+
+    linewidth=2,
+
+    label=(
+        "Backtracking Scale"
+    )
+)
+
+
+# Mark steps where the linearized filter
+# modified the nominal motion.
+corrected_indices = np.flatnonzero(
+    corrected_history
+)
+
+if len(
+    corrected_indices
+) > 0:
+
+    ax4.scatter(
+        corrected_indices,
+
+        safety_scale_history[
+            corrected_indices
+        ],
+
+        s=60,
+
+        marker="x",
+
+        label=(
+            "Safety-Corrected Step"
+        )
+    )
+
 
 ax4.set_xlabel(
     "IK Step"
@@ -971,14 +1232,20 @@ ax4.set_title(
     "Multi-Obstacle Safety Filter Activity"
 )
 
-ax4.grid(True)
+ax4.grid(
+    True
+)
+
+ax4.legend()
 
 fig4.tight_layout()
 
 fig4.savefig(
     results_dir
     / "multi_obstacle_safety_filter_scale.png",
+
     dpi=300,
+
     bbox_inches="tight"
 )
 
@@ -995,16 +1262,24 @@ ax5.plot(
     baseline_result[
         "sigma_min_history"
     ],
+
     linewidth=2,
-    label="Baseline Multi-Objective IK"
+
+    label=(
+        "Baseline Multi-Objective IK"
+    )
 )
 
 ax5.plot(
     multi_result[
         "sigma_min_history"
     ],
+
     linewidth=2,
-    label="Multi-Obstacle Safety IK"
+
+    label=(
+        "Multi-Obstacle Safety IK"
+    )
 )
 
 ax5.set_xlabel(
@@ -1019,7 +1294,9 @@ ax5.set_title(
     "Singularity Metric Comparison"
 )
 
-ax5.grid(True)
+ax5.grid(
+    True
+)
 
 ax5.legend()
 
@@ -1028,17 +1305,19 @@ fig5.tight_layout()
 fig5.savefig(
     results_dir
     / "multi_obstacle_sigma_min.png",
+
     dpi=300,
+
     bbox_inches="tight"
 )
 
 
 # =====================================================
-# PLOT 6 — 3D PATH
+# PLOT 6 — 3D CARTESIAN PATH
 # =====================================================
 
 fig6 = plt.figure(
-    figsize=(10, 8)
+    figsize=(11, 9)
 )
 
 ax6 = fig6.add_subplot(
@@ -1062,36 +1341,75 @@ multi_positions = (
 
 ax6.plot(
     baseline_positions[:, 0],
+
     baseline_positions[:, 1],
+
     baseline_positions[:, 2],
+
     linewidth=2,
+
     label="Baseline"
 )
 
+
 ax6.plot(
     multi_positions[:, 0],
+
     multi_positions[:, 1],
+
     multi_positions[:, 2],
+
     linewidth=2,
-    label="Multi-Obstacle Safety IK"
+
+    label=(
+        "Multi-Obstacle Safety IK"
+    )
 )
 
 
+# =====================================================
+# START
+# =====================================================
+
 ax6.scatter(
-    baseline_positions[0, 0],
-    baseline_positions[0, 1],
-    baseline_positions[0, 2],
+    baseline_positions[
+        0,
+        0
+    ],
+
+    baseline_positions[
+        0,
+        1
+    ],
+
+    baseline_positions[
+        0,
+        2
+    ],
+
     s=90,
+
     marker="o",
+
     label="Start"
 )
 
+
+# =====================================================
+# TARGET
+# =====================================================
+
 ax6.scatter(
     target_position[0],
+
     target_position[1],
+
     target_position[2],
+
     s=140,
+
     marker="X",
+
     label="Target"
 )
 
@@ -1113,7 +1431,9 @@ v = np.linspace(
 )
 
 
-for obstacle in obstacles:
+for obstacle_index, obstacle in enumerate(
+    obstacles
+):
 
     center = np.asarray(
         obstacle[
@@ -1162,10 +1482,28 @@ for obstacle in obstacles:
         alpha=0.35
     )
 
+    # Offset the text labels slightly so they
+    # remain readable in the 3D figure.
+    label_offset = np.array([
+        0.0,
+        0.0,
+        0.13
+        + 0.03
+        * obstacle_index
+    ])
+
+    label_position = (
+        center
+        + label_offset
+    )
+
     ax6.text(
-        center[0],
-        center[1],
-        center[2],
+        label_position[0],
+
+        label_position[1],
+
+        label_position[2],
+
         obstacle[
             "name"
         ]
@@ -1188,7 +1526,9 @@ ax6.set_title(
     "Multi-Obstacle Safety-Constrained IK"
 )
 
-ax6.grid(True)
+ax6.grid(
+    True
+)
 
 ax6.legend()
 
@@ -1197,7 +1537,9 @@ fig6.tight_layout()
 fig6.savefig(
     results_dir
     / "multi_obstacle_path_comparison.png",
+
     dpi=300,
+
     bbox_inches="tight"
 )
 
@@ -1206,14 +1548,22 @@ fig6.savefig(
 # TERMINAL SUMMARY
 # =====================================================
 
-print("=" * 78)
+print(
+    "=" * 78
+)
 
 print(
     "MULTI-OBSTACLE SAFETY-CONSTRAINED IK COMPARISON"
 )
 
-print("=" * 78)
+print(
+    "=" * 78
+)
 
+
+# =====================================================
+# OBSTACLE INFORMATION
+# =====================================================
 
 for index, design in enumerate(
     [
@@ -1248,9 +1598,24 @@ for index, design in enumerate(
         f"{design['clearance']:.8f} m"
     )
 
+    print(
+        "Initial clearance: "
+        f"{design['initial_clearance']:.8f} m"
+    )
+
+    print(
+        "Baseline final clearance: "
+        f"{design['final_clearance']:.8f} m"
+    )
+
 
 print(
-    "\nObstacle radius: "
+    "\nObstacle-center separation: "
+    f"{obstacle_center_separation:.8f} m"
+)
+
+print(
+    "Obstacle radius: "
     f"{obstacle_radius:.4f} m"
 )
 
@@ -1264,6 +1629,15 @@ print(
     f"{obstacle_safety_distance:.4f} m"
 )
 
+print(
+    "Influence distance: "
+    f"{obstacle_influence_distance:.4f} m"
+)
+
+
+# =====================================================
+# BASELINE SUMMARY
+# =====================================================
 
 print(
     "\n"
@@ -1303,6 +1677,10 @@ print(
     f"{baseline_min_clearance >= obstacle_safety_distance}"
 )
 
+
+# =====================================================
+# MULTI-OBSTACLE SUMMARY
+# =====================================================
 
 print(
     "\n"
@@ -1363,56 +1741,125 @@ print(
 )
 
 
+# =====================================================
+# OBSTACLE-ACTIVATION STATISTICS
+# =====================================================
+
 if len(
-    multi_result[
-        "active_obstacle_count_history"
-    ]
+    active_history
 ) > 0:
+
+    print(
+        "Minimum simultaneously active obstacles: "
+        f"{np.min(active_history)}"
+    )
 
     print(
         "Maximum simultaneously active obstacles: "
-        f"{np.max(multi_result['active_obstacle_count_history'])}"
+        f"{np.max(active_history)}"
+    )
+
+    unique_active_counts = np.unique(
+        active_history
+    )
+
+    print(
+        "Observed active-obstacle counts: "
+        f"{unique_active_counts.tolist()}"
+    )
+
+
+# =====================================================
+# SAFETY FILTER STATISTICS
+# =====================================================
+
+if len(
+    corrected_history
+) > 0:
+
+    corrected_steps = int(
+        np.count_nonzero(
+            corrected_history
+        )
+    )
+
+    print(
+        "Safety-filter corrected steps: "
+        f"{corrected_steps}"
+    )
+
+    print(
+        "Total controlled IK steps: "
+        f"{len(corrected_history)}"
+    )
+
+    print(
+        "Safety-filter correction ratio: "
+        f"{corrected_steps / len(corrected_history):.4f}"
     )
 
 
 if len(
-    multi_result[
-        "safety_filter_corrected_history"
-    ]
+    safety_scale_history
 ) > 0:
 
-    print(
-        "Safety-filter corrected steps: "
-        f"{np.count_nonzero(multi_result['safety_filter_corrected_history'])}"
+    backtracked_steps = int(
+        np.count_nonzero(
+            safety_scale_history
+            < (
+                1.0
+                - 1e-12
+            )
+        )
     )
 
+    print(
+        "Backtracked steps: "
+        f"{backtracked_steps}"
+    )
+
+    print(
+        "Minimum safety-filter scale: "
+        f"{np.min(safety_scale_history):.8f}"
+    )
+
+
+# =====================================================
+# SAVED FIGURES
+# =====================================================
 
 print(
     "\nSaved figures:"
 )
 
 print(
-    "results/multi_obstacle_clearance_comparison.png"
+    "results/"
+    "multi_obstacle_clearance_comparison.png"
 )
 
 print(
-    "results/multi_obstacle_error_comparison.png"
+    "results/"
+    "multi_obstacle_error_comparison.png"
 )
 
 print(
-    "results/multi_obstacle_active_count.png"
+    "results/"
+    "multi_obstacle_active_count.png"
 )
 
 print(
-    "results/multi_obstacle_safety_filter_scale.png"
+    "results/"
+    "multi_obstacle_safety_filter_scale.png"
 )
 
 print(
-    "results/multi_obstacle_sigma_min.png"
+    "results/"
+    "multi_obstacle_sigma_min.png"
 )
 
 print(
-    "results/multi_obstacle_path_comparison.png"
+    "results/"
+    "multi_obstacle_path_comparison.png"
 )
 
 
