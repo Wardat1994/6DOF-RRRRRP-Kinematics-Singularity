@@ -498,7 +498,6 @@ def generate_obstacle_candidates():
 
     return candidates
 
-
 # =====================================================
 # SELECT TWO DISTINCT CHALLENGING OBSTACLES
 # =====================================================
@@ -510,7 +509,6 @@ def select_two_obstacles():
     )
 
     if len(candidates) < 2:
-
         raise RuntimeError(
             "Could not generate at least two "
             "valid obstacle candidates."
@@ -526,20 +524,6 @@ def select_two_obstacles():
         number_of_states - 1,
         1
     )
-
-    # =================================================
-    # PREFERRED TEMPORAL LOCATIONS
-    # =================================================
-    #
-    # Obstacle 1:
-    # around the first third of the trajectory.
-    #
-    # Obstacle 2:
-    # around the last third of the trajectory.
-    #
-    # These are preferences rather than hard
-    # requirements.
-    # =================================================
 
     first_target_index = (
         0.30
@@ -569,19 +553,12 @@ def select_two_obstacles():
         )
     ]
 
-    if len(
-        first_candidates
-    ) == 0:
-
-        first_candidates = (
-            candidates
-        )
+    if len(first_candidates) == 0:
+        first_candidates = candidates
 
     first = min(
         first_candidates,
-
         key=lambda item: (
-
             abs(
                 item[
                     "state_index"
@@ -589,8 +566,8 @@ def select_two_obstacles():
                 - first_target_index
             )
             / trajectory_span
-
-            + 3.0
+            +
+            3.0
             * abs(
                 item[
                     "clearance"
@@ -601,10 +578,30 @@ def select_two_obstacles():
     )
 
     # =================================================
-    # SECOND OBSTACLE CANDIDATES
+    # REQUIRED VISUAL / PHYSICAL SEPARATION
+    # =================================================
+    #
+    # Two obstacle spheres each have radius 0.10 m.
+    #
+    # Therefore:
+    #
+    #     2 * radius = 0.20 m
+    #
+    # Add another 0.01 m so their surfaces are visibly
+    # separated instead of touching or overlapping.
     # =================================================
 
-    second_candidates = []
+    preferred_center_separation = (
+        2.0
+        * obstacle_radius
+        + 0.01
+    )
+
+    # =================================================
+    # BUILD SECOND-OBSTACLE CANDIDATES
+    # =================================================
+
+    all_second_candidates = []
 
     for candidate in candidates:
 
@@ -628,7 +625,7 @@ def select_two_obstacles():
             ]
         )
 
-        # Reject an effectively identical candidate.
+        # Reject effectively identical candidates.
         if (
             center_separation
             <= 1e-3
@@ -636,7 +633,7 @@ def select_two_obstacles():
         ):
             continue
 
-        second_candidates.append({
+        all_second_candidates.append({
             **candidate,
 
             "_center_separation": (
@@ -648,32 +645,50 @@ def select_two_obstacles():
             ),
         })
 
-    if len(
-        second_candidates
-    ) == 0:
-
+    if len(all_second_candidates) == 0:
         raise RuntimeError(
             "Could not generate two distinct "
             "obstacle candidates."
         )
 
     # =================================================
-    # SECOND OBSTACLE SCORE
-    # =================================================
-    #
-    # We prefer:
-    #
-    # 1. A candidate near the final third.
-    # 2. A challenging baseline clearance.
-    # 3. Large temporal separation.
-    # 4. Large Cartesian separation.
-    #
-    # No hard 0.40 m requirement is imposed.
+    # PREFER NON-OVERLAPPING OBSTACLES
     # =================================================
 
-    def second_score(
-        item
-    ):
+    separated_candidates = [
+        candidate
+        for candidate in all_second_candidates
+        if (
+            candidate[
+                "_center_separation"
+            ]
+            >= preferred_center_separation
+        )
+    ]
+
+    # If the geometry provides a truly separated pair,
+    # use only those candidates.
+    #
+    # Otherwise, fall back gracefully to the best
+    # available distinct obstacle instead of stopping
+    # the experiment.
+    if len(separated_candidates) > 0:
+
+        second_candidates = (
+            separated_candidates
+        )
+
+    else:
+
+        second_candidates = (
+            all_second_candidates
+        )
+
+    # =================================================
+    # SECOND-OBSTACLE SCORE
+    # =================================================
+
+    def second_score(item):
 
         temporal_target_error = (
             abs(
@@ -723,7 +738,6 @@ def select_two_obstacles():
         key=second_score
     )
 
-    # Remove temporary scoring fields.
     second = {
         key: value
         for key, value
@@ -753,7 +767,6 @@ def select_two_obstacles():
         first,
         second
     )
-
 
 # =====================================================
 # SELECT OBSTACLES
